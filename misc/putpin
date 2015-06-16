@@ -1,0 +1,30 @@
+#!/usr/bin/ruby
+# Automatically puts PIN code to D-Link DWR-730 3G router (FW Version v2.00_EU)
+require 'rubygems'
+require 'mechanize'
+
+URL = 'https://192.168.0.1'
+ADMIN_USER = 'admin'
+ADMIN_PASS = 'qwerty'
+PIN = '1111'
+
+agent = Mechanize.new
+agent.agent.http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+page = agent.get(URL + '/login.asp')
+
+login_form = page.forms.first
+login_form.ID = ADMIN_USER
+login_form.PASSWORD = ADMIN_PASS
+
+page = agent.submit(login_form)
+
+sid = page.uri.to_s.split('?').last.split('=').last
+puts "Obtained session id #{sid}, putting PIN"
+agent.post(URL + '/rpc.cgi', {
+             "COUNT" => "1",
+             "WWW_SID" => sid,
+             "ACTION_1" => 'function',
+             "NAME_1" => 'modemd_action',
+             "VALUE_1" => "16,302,str,#{PIN}"
+           })
+puts "Done"
