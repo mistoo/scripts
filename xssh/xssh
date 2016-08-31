@@ -27,7 +27,7 @@ SSH_OPTIONS="-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
 # $ scp -P SOME_LOCAL_PORT /tmp/foo.txt joe@localhost:/var/tmp/
 
 if [ -f "$HOME/.xssh" ]; then
-    HOSTS=$(cat "$HOME/.xssh")
+    HOSTS=$(cat "$HOME/.xssh" | grep -v '^#')
 else
     echo "$HOME/.xssh does not exists"
     exit 1
@@ -55,7 +55,7 @@ do_knock() {
         echo -n "*" | nc -w1 $host $i
         [ -n "$VERBOSE" ] && echo -n " $i"
     done
-    echo
+    [ -n "$VERBOSE" ] && echo
 }
 
 knock() {
@@ -85,6 +85,16 @@ xssh_getopt() {
     
     while [ $# -gt 0 ]; do
         case "${1}" in
+            --hosts)            # for bash autocompletition
+                for hostspec in $HOSTS; do
+                    name=$(echo $hostspec | cut -f1 -d';')
+                    if echo $name | grep -q '@'; then # user@host?
+                        name=$(echo $name | cut -f2 -d'@')
+                    fi
+                    echo $name
+                done
+                exit 0
+                ;;
 	    -l)
                 echo "Configured tunnels:"
                 for hostspec in $HOSTS; do
@@ -124,28 +134,34 @@ xssh() {
         
         if [ "$name" == "$TO" ]; then
             found="1"
-            port=$(get_free_port)
-            
+
             via=$(echo $hostspec | cut -f2 -d';')
             fwd=$(echo $hostspec | cut -f3 -d';')
-        
-            [ -z "$via" ] && exit1 "$hostspec: empty via"
-            [ -z "$fwd" ] && exit1 "$hostspec: empty endpoint"
             
-            knock $via $hostspec
+            if [ -z "$via" -a -z "$fwd" ]; then # just ssh 
+                knock $name $hostspec
+                [ -n "$VERBOSE" ] && echo "* ssh -A -l $to_user $name"
+                ssh -A -l $to_user $name
+            else 
+                [ -z "$via" ] && exit1 "$hostspec: empty via"
+                [ -z "$fwd" ] && exit1 "$hostspec: empty endpoint"
+                
+                port=$(get_free_port)
+                knock $via $hostspec
 
-            via_port=22
-            if echo $via | grep -q ':'; then # host:port?
-                via_port=$(echo $via | cut -f2 -d':')
-                via=$(echo $via | cut -f1 -d':')
-            fi
+                via_port=22
+                if echo $via | grep -q ':'; then # host:port?
+                    via_port=$(echo $via | cut -f2 -d':')
+                    via=$(echo $via | cut -f1 -d':')
+                fi
             
-            if [ -n "$VERBOSE" ]; then
-                echo "* ssh -A $via -L $port:$fwd"
-                echo "* ssh -p $port -l $to_user localhost $@"
+                if [ -n "$VERBOSE" ]; then
+                    echo "* ssh -A $via -L $port:$fwd"
+                    echo "* ssh -p $port -l $to_user localhost $@"
+                fi
+                ssh -A $via -p $via_port -L $port:$fwd -f -o ExitOnForwardFailure=yes sleep 10
+                exec ssh -p $port -l $to_user localhost -q $SSH_OPTIONS
             fi
-            ssh -A $via -p $via_port -L $port:$fwd -f -o ExitOnForwardFailure=yes sleep 10
-            exec ssh -p $port -l $to_user localhost -q $SSH_OPTIONS
         fi
     done
 
