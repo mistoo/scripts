@@ -1,13 +1,16 @@
 #!/bin/sh
 # SSH/SCP tunnels helper script
 
-MODE=$(basename $0)
-[ -z "$MODE" ] && MODE="xssh"
 VERBOSE=""
 SSH_OPTIONS="-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
+USER_OPTIONS=""
+
+MODE=$(basename $0)
+[ -z "$MODE" ] && MODE="xssh"
+
 
 # Hosts configuration schema (~/.xssh)
-#[USER@]HOSTNAME;[VIA USER@]VIA HOST;TUNNEL ENDPOINT[;KNOCK SEQUENCE]
+#[USER@]HOSTNAME;[[VIA USER@]VIA HOST;TUNNEL ENDPOINT][;KNOCK SEQUENCE]
 
 # eg if config line looks like: joe@foo;jane@gw.somedomain.com:1022;192.168.1.10, then
 #
@@ -39,6 +42,10 @@ exit1() {
     exit 1
 }
 
+log() {
+    [ -n "$VERBOSE" ] && echo "* $@"
+}
+
 get_free_port() {
     port=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
     [ -z "$port" ] && exit1 "port allocation error"
@@ -60,9 +67,9 @@ do_knock() {
 
 knock() {
     local via=$1
-    local hostspec=$2
+    local connspec=$2
     
-    local knock_seq=$(echo $hostspec | cut -f4 -d';')
+    local knock_seq=$(echo $connspec | cut -f4 -d';')
     if [ -n "$knock_seq" ]; then
         local via_host=$via
         if echo $via_host | grep -q '@'; then # user@host?
@@ -76,6 +83,89 @@ knock() {
     fi
 }
 
+find_conn() {
+    local host=$1
+    local found=1
+    local connspec
+    
+    for connspec in $HOSTS; do
+        local name=$(echo $connspec | cut -f1 -d';')
+        
+        local to_user=$(whoami)
+        if echo $name | grep -q '@'; then # user@host?
+            to_user=$(echo $name | cut -f1 -d'@')
+            name=$(echo $name | cut -f2 -d'@')
+        fi
+        
+        if [ "$name" = "$host" ]; then
+            echo $connspec
+            found=0
+            break
+        fi
+    done
+    
+    return $found
+}
+
+# parse [user@]host[:port]
+parse_host() {
+    local host=$1
+    local user=$(whoami)
+    local port=22
+    
+    if echo $host | grep -q '@'; then # user@host?
+        user=$(echo $host | cut -f1 -d'@')
+        host=$(echo $host | cut -f2 -d'@')
+    fi
+
+    if echo $host | grep -q ':'; then # user@host?
+        port=$(echo $host | cut -f2 -d':')
+        host=$(echo $host | cut -f1 -d':')
+    fi
+    
+    echo "$user;$host;$host"
+}
+
+tunnel() {
+    local connspec=$1
+    shift
+    
+    CONN_INFO=""
+    
+    local name=$(echo $connspec | cut -f1 -d';')
+    local to_user=$(whoami)
+    if echo $name | grep -q '@'; then # user@host?
+        to_user=$(echo $name | cut -f1 -d'@')
+        name=$(echo $name | cut -f2 -d'@')
+    fi
+    
+    local via=$(echo $connspec | cut -f2 -d';')
+    local fwd=$(echo $connspec | cut -f3 -d';')
+    
+    if [ -z "$via" -a -z "$fwd" ]; then # just ssh 
+        knock $name $connspec
+        CONN_INFO="22;$to_user;$name"
+        return 0
+    fi
+    
+    [ -z "$via" ] && exit1 "$connspec: empty via"
+    [ -z "$fwd" ] && exit1 "$connspec: empty endpoint"
+    
+    local port=$(get_free_port)
+    knock $via $connspec
+    
+    local via_port=22
+    if echo $via | grep -q ':'; then # host:port?
+        via_port=$(echo $via | cut -f2 -d':')
+        via=$(echo $via | cut -f1 -d':')
+    fi
+    
+    log "ssh -A $via -p $via_port -L $port:$fwd $@"
+    ssh -A $via -p $via_port -L $port:$fwd -f -o ExitOnForwardFailure=yes $@ sleep 10 
+    CONN_INFO="$port;$to_user;localhost"
+    return 0
+}
+
 xssh_usage() {
     exit1 "Usage: xssh [-l] [-v] [HOSTNAME]"
 }
@@ -86,8 +176,8 @@ xssh_getopt() {
     while [ $# -gt 0 ]; do
         case "${1}" in
             --hosts)            # for bash autocompletition
-                for hostspec in $HOSTS; do
-                    name=$(echo $hostspec | cut -f1 -d';')
+                for connspec in $HOSTS; do
+                    name=$(echo $connspec | cut -f1 -d';')
                     if echo $name | grep -q '@'; then # user@host?
                         name=$(echo $name | cut -f2 -d'@')
                     fi
@@ -97,8 +187,8 @@ xssh_getopt() {
                 ;;
 	    -l)
                 echo "Configured tunnels:"
-                for hostspec in $HOSTS; do
-                    echo "  $hostspec"
+                for connspec in $HOSTS; do
+                    echo "  $connspec"
                 done
                 exit 0
                 ;;
@@ -107,7 +197,7 @@ xssh_getopt() {
                 shift
                 ;;
 	    -*)
-                SSH_OPTIONS="$SSH_OPTIONS $1"
+                USER_OPTIONS="$USER_OPTIONS $1"
                 shift
                 ;;
             
@@ -120,61 +210,47 @@ xssh_getopt() {
     [ -z "$TO" ] && xssh_usage
 }
 
-
 xssh() {
-    found=
-    for hostspec in $HOSTS; do
-        name=$(echo $hostspec | cut -f1 -d';')
-        
-        to_user=$(whoami)
-        if echo $name | grep -q '@'; then # user@host?
-            to_user=$(echo $name | cut -f1 -d'@')
-            name=$(echo $name | cut -f2 -d'@')
-        fi
-        
-        if [ "$name" == "$TO" ]; then
-            found="1"
-
-            via=$(echo $hostspec | cut -f2 -d';')
-            fwd=$(echo $hostspec | cut -f3 -d';')
-            
-            if [ -z "$via" -a -z "$fwd" ]; then # just ssh 
-                knock $name $hostspec
-                [ -n "$VERBOSE" ] && echo "* ssh -A -l $to_user $name"
-                ssh -A -l $to_user $name
-            else 
-                [ -z "$via" ] && exit1 "$hostspec: empty via"
-                [ -z "$fwd" ] && exit1 "$hostspec: empty endpoint"
-                
-                port=$(get_free_port)
-                knock $via $hostspec
-
-                via_port=22
-                if echo $via | grep -q ':'; then # host:port?
-                    via_port=$(echo $via | cut -f2 -d':')
-                    via=$(echo $via | cut -f1 -d':')
-                fi
-            
-                if [ -n "$VERBOSE" ]; then
-                    echo "* ssh -A $via -L $port:$fwd"
-                    echo "* ssh -p $port -l $to_user localhost $@"
-                fi
-                ssh -A $via -p $via_port -L $port:$fwd -f -o ExitOnForwardFailure=yes sleep 10
-                exec ssh -p $port -l $to_user localhost -q $SSH_OPTIONS
-            fi
-        fi
-    done
-
-    if [ -z "$found" ]; then
-        echo "$TO: no such host configured, use -l to list available hosts"
-        exit 1
+    local to=$1
+    local connspec=$(find_conn $to)
+    
+    if [ -z "$connspec" ]; then
+        exit1 "$to: no such host configured, use -l to list available hosts"
     fi
+
+    via=$(echo $connspec | cut -f2 -d';')
+    local tunnel_ssh_options=""
+    local via_connspec=$(find_conn $via)
+    
+    if [ -n "$via_connspec" ]; then # nested?
+        log "nested via $via_connspec"
+        if ! tunnel $via_connspec; then
+            exit1
+        fi
+        #echo "conn_info=$CONN_INFO"
+        local port=$(echo $CONN_INFO | cut -f1 -d';')
+        local user=$(echo $CONN_INFO | cut -f2 -d';')
+        local host=$(echo $CONN_INFO | cut -f3 -d';')
+        connspec=$(echo $connspec | sed "s|;$via;|;$user@$host:$port;|")
+        tunnel_ssh_options="-q $SSH_OPTIONS"
+    fi
+    
+    if ! tunnel $connspec $tunnel_ssh_options; then
+        exit1
+    fi
+
+    #echo "conn_info=$CONN_INFO"
+    local port=$(echo $CONN_INFO | cut -f1 -d';')
+    local user=$(echo $CONN_INFO | cut -f2 -d';')
+    local host=$(echo $CONN_INFO | cut -f3 -d';')
+    
+    log "ssh -p $port -l $user $host -q $SSH_OPTIONS"
+    exec ssh -p $port -l $user $host -q $SSH_OPTIONS $USER_OPTIONS
 }
 
 
 xscp_usage() {
     exit1 "Usage: xscp FILE... HOSTNAME[:FILE]"
-    
 }
 
 xscp_getopt() {
@@ -184,8 +260,8 @@ xscp_getopt() {
         case "${1}" in
 	    -l)
                 echo "Configured tunnels:"
-                for hostspec in $HOSTS; do
-                    echo "  $hostspec"
+                for connspec in $HOSTS; do
+                    echo "  $connspec"
                 done
                 exit 0
                 ;;
@@ -194,12 +270,14 @@ xscp_getopt() {
                 shift
                 ;;
 	    -*)
-                SSH_OPTIONS="$SSH_OPTIONS $1"
+                USER_OPTIONS="$USER_OPTIONS $1"
                 shift
                 ;;
             
             *:*)
                 TO=$1
+                COPY_DIRECTION="to"
+                [ -z "$SRC" ] && COPY_DIRECTION="from"
                 shift
                 ;;
             *)
@@ -212,54 +290,61 @@ xscp_getopt() {
 }
 
 xscp() {
-    found=
-    TO_PATH=$(echo $TO | cut -f2 -d':')
-    TO=$(echo $TO | cut -f1 -d':')
+    local to=$1
+    local src=$2
+    local to_path=$(echo $to | cut -f2 -d':')
+    
+    to=$(echo $to | cut -f1 -d':')
+    local connspec=$(find_conn $to)
+    
+    if [ -z "$connspec" ]; then 
+        exit1 "$to: no such host configured, use -l to list available hosts"
+    fi
 
-    for hostspec in $HOSTS; do
-        name=$(echo $hostspec | cut -f1 -d';')
-        
-        to_user=$(whoami)
-        if echo $name | grep -q '@'; then # user@host?
-            to_user=$(echo $name | cut -f1 -d'@')
-            name=$(echo $name | cut -f2 -d'@')
+    via=$(echo $connspec | cut -f2 -d';')
+    local tunnel_ssh_options=""
+    local via_connspec=$(find_conn $via)
+    
+    if [ -n "$via_connspec" ]; then # nested?
+        log "nested via $via_connspec"
+        if ! tunnel $via_connspec; then
+            exit1
         fi
-        
-        if [ "$name" == "$TO" ]; then
-            found="1"
-            port=$(get_free_port)
-            via=$(echo $hostspec | cut -f2 -d';')
-            fwd=$(echo $hostspec | cut -f3 -d';')
-            
-            [ -z "$via" ] && exit1 "$hostspec: empty via"
-            [ -z "$fwd" ] && exit1 "$hostspec: empty endpoint"
-            knock $via $hostspec
+        #echo "conn_info=$CONN_INFO"
+        local port=$(echo $CONN_INFO | cut -f1 -d';')
+        local user=$(echo $CONN_INFO | cut -f2 -d';')
+        local host=$(echo $CONN_INFO | cut -f3 -d';')
+        connspec=$(echo $connspec | sed "s|;$via;|;$user@$host:$port;|")
+        tunnel_ssh_options="-q $SSH_OPTIONS"
+    fi
+    
+    if ! tunnel $connspec $tunnel_ssh_options; then
+        exit1
+    fi
 
-            via_port=22
-            if echo $via | grep -q ':'; then # host:port?
-                via_port=$(echo $via | cut -f2 -d':')
-                via=$(echo $via | cut -f1 -d':')
-            fi
-            
-            if [ -n "$VERBOSE" ]; then
-                echo "* ssh -A $via -L $port:$fwd"
-                echo "* scp -P $port $SSH_OPTIONS $SRC $to_user@localhost:$TO_PATH"
-            fi
-            ssh -A $via -p $via_port -L $port:$fwd -f -o ExitOnForwardFailure=yes sleep 10
-            exec scp -P $port $SSH_OPTIONS $SRC $to_user@localhost:$TO_PATH 
-        fi
-    done
+    local port=$(echo $CONN_INFO | cut -f1 -d';')
+    local user=$(echo $CONN_INFO | cut -f2 -d';')
+    local host=$(echo $CONN_INFO | cut -f3 -d';')
 
-    if [ -z "$found" ]; then
-        echo "$TO: no such host configured, use -l to list available hosts"
-        exit 1
+    local from_to="$SRC $user@$host:$to_path"
+    if [ "$COPY_DIRECTION" = "from" ]; then
+        from_to="$user@$host:$to_path $SRC"
+    fi
+    
+    if [ "$MODE" = "xrsync" ]; then
+        echo "rsync"
+        log "rsync -e 'ssh -p $port $SSH_OPTIONS -q' $USER_OPTIONS $from_to"
+        rsync -e "ssh -p $port $SSH_OPTIONS" $USER_OPTIONS $from_to
+    else
+        log "scp -P $port $USER_OPTIONS $SSH_OPTIONS $from_to"
+        scp -P $port $USER_OPTIONS $SSH_OPTIONS $from_to 2>/dev/null
     fi
 }
 
 if [ "$MODE" = "xssh" ]; then
     xssh_getopt $@
-    xssh
+    xssh $TO
 else 
     xscp_getopt $@
-    xscp
+    xscp $TO $SRC
 fi
