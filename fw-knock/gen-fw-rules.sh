@@ -8,6 +8,7 @@
 
 
 KNOCK_PORTS="18000 19000 20000"
+KNOCK_PORTS="17038 26021 16053"
 PORTS_TO_OPEN="22"
 
 create_iptables_table() {
