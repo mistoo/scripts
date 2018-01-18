@@ -1,0 +1,8 @@
+[{
+    "path": "/",
+    "tag": "rootfs",
+    "hchk_id": "aaaa"
+},{
+    "path": "/etc",
+    "tag": "etc"
+}]
