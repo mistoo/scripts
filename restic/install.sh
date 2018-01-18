@@ -9,6 +9,15 @@ exit1() {
     exit 1
 }
 
+ensure_commands_exist() {
+    while [ -n "$1" ]; do
+        command -v $1 >/dev/null 2>/dev/null || exit1 "$1: command not found"
+        shift
+    done
+}
+
+ensure_commands_exist "getgid" "groupadd" "id" "chmod" "chown" "setcap" "install" "jq" "wget" "wget" "openssl"
+
 getgid restic >/dev/null 2>/dev/null || groupadd restic || exit 1
 id -u restic >/dev/null 2>/dev/null || useradd restic -m -d /home/services/restic -g restic || exit 1
 mkdir -p ~restic/bin || exit 1
@@ -36,9 +45,19 @@ echo "* installing scripts"
 install -m 750 -g restic -o root restic.sh restic-backup.sh ~restic/bin/ || exit 1
 
 [ -f ~restic/jobs.json ] || install -o restic -g restic -m 600 jobs.json ~restic
-[ -f ~restic/.restic.env ] || install -o restic -g restic -m 600 .restic.env ~restic/.restic.env
+[ -f ~restic/.restic.env ] || install -o restic -g restic -m 600 restic.env ~restic/.restic.env
 
-[ -f /etc/cron.d/restic-backup ] || echo "* installing crontab"
-[ -f /etc/cron.d/restic-backup ] || install -m 640 crontab /etc/cron.d/restic-backup
+if [ ! -f /etc/cron.d/restic-backup ]; then
+    echo "* installing crontab"
+    install -m 640 crontab /etc/cron.d/restic-backup
+fi
 
-echo "* installation complete, do su - restic -c 'restic-backup.sh init'"
+RESTIC_PASSWORD_FILE=~restic/.restic.key
+if [ ! -f $RESTIC_PASSWORD_FILE ]; then
+    echo "* generating repo key $RESTIC_PASSWORD_FILE"
+    openssl rand -base64 24 > $RESTIC_PASSWORD_FILE
+    chown root:restic $RESTIC_PASSWORD_FILE
+    chmod 640 $RESTIC_PASSWORD_FILE
+fi
+
+echo "* installation complete"

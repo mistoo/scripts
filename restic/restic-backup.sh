@@ -8,6 +8,11 @@ exit1() {
     exit 1
 }
 
+ensure_command_exists() {
+    local cmd=$1
+    command -v $cmd >/dev/null 2>/dev/null || exit1 "$cmd: command not found"
+}
+
 getattr() {
     local index=$1
     local name=$2
@@ -19,16 +24,7 @@ getattr() {
     echo $value
 }
 
-while getopts ":q" opt; do
-  case $opt in
-    q)
-      echo "-q was triggered!" >&2
-      ;;
-    \?)
-      echo "Invalid option: -$OPTARG" >&2
-      ;;
-  esac
-done
+ensure_command_exists "jq"
 
 JOBS=$1
 [ -z "$JOBS" ] && JOBS="$HOME/.restic-jobs.json"
