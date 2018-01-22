@@ -8,9 +8,11 @@ exit1() {
     exit 1
 }
 
-ensure_command_exists() {
-    local cmd=$1
-    command -v $cmd >/dev/null 2>/dev/null || exit1 "$cmd: command not found"
+ensure_commands_exist() {
+    while [ -n "$1" ]; do
+        command -v $1 >/dev/null 2>/dev/null || exit1 "$1: command not found"
+        shift
+    done
 }
 
 getattr() {
@@ -24,7 +26,7 @@ getattr() {
     echo $value
 }
 
-ensure_command_exists "jq"
+ensure_commands_exist "jq" "curl"
 
 JOBS=$1
 [ -z "$JOBS" ] && JOBS="$HOME/.restic-jobs.json"

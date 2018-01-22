@@ -16,7 +16,7 @@ ensure_commands_exist() {
     done
 }
 
-ensure_commands_exist "getgid" "groupadd" "id" "chmod" "chown" "setcap" "install" "jq" "wget" "wget" "openssl"
+ensure_commands_exist "getgid" "groupadd" "id" "chmod" "chown" "setcap" "install" "jq" "wget" "wget" "openssl" "curl"
 
 getgid restic >/dev/null 2>/dev/null || groupadd restic || exit 1
 id -u restic >/dev/null 2>/dev/null || useradd restic -m -d /home/services/restic -g restic || exit 1
